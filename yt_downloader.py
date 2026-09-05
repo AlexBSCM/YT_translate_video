@@ -510,26 +510,38 @@ class YouTubeDownloaderApp:
         ]
         last_error = ""
         opts = None
-        for f, client in attempts:
-            try:
-                os.makedirs(os.path.dirname(outtmpl), exist_ok=True)
-                opts = self.build_opts(client, f, outtmpl)
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    path = info.get("filepath")
-                    if not path:
-                        rd = info.get("requested_downloads") or []
-                        if rd:
-                            path = rd[0].get("filepath")
-                    return True, path, ""
-            except Exception as e:
-                detail = str(e).strip()
-                if not detail and opts is not None:
-                    detail = "\n".join(opts["logger"].lines[-50:])
-                last_error = detail
-                if "HTTP Error 403" not in detail and "unable to download" not in detail:
-                    return False, None, detail
+        for _round in range(2):
+            for f, client in attempts:
+                try:
+                    os.makedirs(os.path.dirname(outtmpl), exist_ok=True)
+                    opts = self.build_opts(client, f, outtmpl)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        path = info.get("filepath")
+                        if not path:
+                            rd = info.get("requested_downloads") or []
+                            if rd:
+                                path = rd[0].get("filepath")
+                        return True, path, ""
+                except Exception as e:
+                    detail = str(e).strip()
+                    if not detail and opts is not None:
+                        detail = "\n".join(opts["logger"].lines[-50:])
+                    last_error = detail
+                    if not self._is_retryable(detail):
+                        return False, None, detail
+                    time.sleep(2)
         return False, None, last_error
+
+    @staticmethod
+    def _is_retryable(detail):
+        d = (detail or "").lower()
+        markers = (
+            "http error 403", "unable to download", "getaddrinfo", "failed to resolve",
+            "temporary failure", "timed out", "timeout", "connection", "reset by peer",
+            "remote end closed", "http error 5", "eof occurred", "ssl", "network",
+        )
+        return any(m in d for m in markers)
 
     def build_opts(self, client, fmt, outtmpl, skip=False):
         opts = {
@@ -538,6 +550,7 @@ class YouTubeDownloaderApp:
             "retries": 10,
             "fragment_retries": 10,
             "socket_timeout": 30,
+            "force_ipv4": True,
             "logger": LogCapture(),
             "merge_output_format": "mp4",
         }
