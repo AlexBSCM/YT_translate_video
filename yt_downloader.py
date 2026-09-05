@@ -30,7 +30,8 @@ YT_PATTERNS = [
 ]
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
-INVALID_FS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+# Белый список: вырезаем всё, кроме букв, цифр, пробелов и знаков . , : … + -
+NOT_ALLOWED_RE = re.compile(r"[^\w\s.,:…+\-]", re.UNICODE)
 
 
 def find_node():
@@ -93,7 +94,8 @@ def has_cyrillic(text):
 
 
 def clean_filename(name):
-    name = INVALID_FS_RE.sub("", name or "")
+    name = NOT_ALLOWED_RE.sub("", name or "")
+    name = name.replace("_", "")
     name = re.sub(r"\s+", " ", name).strip().strip(".")
     if len(name) > 150:
         name = name[:150].rstrip()
