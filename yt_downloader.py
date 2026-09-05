@@ -153,7 +153,7 @@ class YouTubeDownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("YouTube Downloader")
-        root.geometry("700x920")
+        root.geometry("700x680")
         root.resizable(True, True)
 
         self.cond = threading.Condition()
@@ -168,139 +168,55 @@ class YouTubeDownloaderApp:
 
         self.load_downloaded()
 
-        self.frame = ttk.Frame(root, padding=16)
+        self.frame = ttk.Frame(root, padding=12)
         self.frame.pack(fill="both", expand=True)
 
-        self.url_label = ttk.Label(self.frame, text="Ссылка на видео:")
+        self.notebook = ttk.Notebook(self.frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        main_tab = ttk.Frame(self.notebook, padding=12)
+        settings_tab = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(main_tab, text="Главная")
+        self.notebook.add(settings_tab, text="Настройки")
+
+        # ---------------- Главная ----------------
+        self.url_label = ttk.Label(main_tab, text="Ссылка на видео:")
         self.url_label.pack(anchor="w")
 
-        self.url_entry = ttk.Entry(self.frame, width=70)
+        self.url_entry = ttk.Entry(main_tab, width=70)
         self.url_entry.pack(fill="x", pady=(4, 4))
         self.url_entry.bind("<Return>", lambda e: self.start_download())
         self.url_entry.bind("<Control-v>", lambda e: self.paste_to(self.url_entry))
 
         self.paste_button = ttk.Button(
-            self.frame, text="Вставить", command=lambda: self.paste_to(self.url_entry)
+            main_tab, text="Вставить", command=lambda: self.paste_to(self.url_entry)
         )
         self.paste_button.pack(anchor="e", pady=(0, 8))
 
         self.setup_context_menu(self.url_entry)
         self.url_entry.focus_set()
 
-        self.quality_label = ttk.Label(self.frame, text="Качество:")
-        self.quality_label.pack(anchor="w")
-
-        self.quality_var = tk.StringVar(value="720p (по умолчанию)")
-        self.quality_combo = ttk.Combobox(
-            self.frame,
-            textvariable=self.quality_var,
-            values=list(QUALITY_OPTIONS.keys()),
-            state="readonly",
-            width=40,
-        )
-        self.quality_combo.pack(anchor="w", pady=(4, 8))
-
-        self.proxy_label = ttk.Label(self.frame, text="Прокси (необязательно):")
-        self.proxy_label.pack(anchor="w")
-
-        self.proxy_var = tk.StringVar(value="")
-        self.proxy_entry = ttk.Entry(self.frame, textvariable=self.proxy_var)
-        self.proxy_entry.pack(fill="x", pady=(4, 4))
-        self.proxy_entry.bind("<Control-v>", lambda e: self.paste_to(self.proxy_entry))
-        self.setup_context_menu(self.proxy_entry)
-
-        self.proxy_hint = ttk.Label(
-            self.frame,
-            text="Пример: http://127.0.0.1:8080 или socks5://127.0.0.1:1080",
-            foreground="gray",
-        )
-        self.proxy_hint.pack(anchor="w", pady=(0, 8))
-
-        self.ru_audio_var = tk.BooleanVar(value=True)
-        self.ru_audio_check = ttk.Checkbutton(
-            self.frame,
-            text="Русская аудиодорожка (если есть)",
-            variable=self.ru_audio_var,
-        )
-        self.ru_audio_check.pack(anchor="w", pady=(0, 4))
-
-        self.translate_var = tk.BooleanVar(value=True)
-        self.translate_check = ttk.Checkbutton(
-            self.frame,
-            text="Переводить название на русский",
-            variable=self.translate_var,
-        )
-        self.translate_check.pack(anchor="w", pady=(0, 4))
-
-        self.monitor_var = tk.BooleanVar(value=True)
-        self.monitor_check = ttk.Checkbutton(
-            self.frame,
-            text="Следить за буфером обмена (автоматически добавлять ссылки)",
-            variable=self.monitor_var,
-        )
-        self.monitor_check.pack(anchor="w", pady=(0, 8))
-
-        self.cookies_label = ttk.Label(
-            self.frame,
-            text="cookies.txt (пусто = авто с рабочего стола):",
-        )
-        self.cookies_label.pack(anchor="w")
-
-        default_cookies = os.path.join(desktop_path(), "cookies.txt")
-        if not os.path.exists(default_cookies):
-            default_cookies = ""
-        self.cookies_var = tk.StringVar(value=default_cookies)
-        self.cookies_entry = ttk.Entry(self.frame, textvariable=self.cookies_var)
-        self.cookies_entry.pack(fill="x", pady=(4, 4))
-
-        self.cookies_button = ttk.Button(
-            self.frame,
-            text="Выбрать файл...",
-            command=self.choose_cookies_file,
-        )
-        self.cookies_button.pack(anchor="e", pady=(0, 4))
-
-        self.browser_cookies_var = tk.BooleanVar(value=False)
-        self.browser_cookies_check = ttk.Checkbutton(
-            self.frame,
-            text="Взять cookies из Chrome (нужно закрыть Chrome!)",
-            variable=self.browser_cookies_var,
-        )
-        self.browser_cookies_check.pack(anchor="w", pady=(0, 8))
-
-        self.folder_label = ttk.Label(self.frame, text="Папка для сохранения:")
-        self.folder_label.pack(anchor="w")
-
-        self.folder_var = tk.StringVar(value=desktop_path())
-        self.folder_entry = ttk.Entry(self.frame, textvariable=self.folder_var)
-        self.folder_entry.pack(fill="x", pady=(4, 4))
-
-        self.folder_button = ttk.Button(
-            self.frame, text="Выбрать...", command=self.choose_folder
-        )
-        self.folder_button.pack(anchor="e", pady=(0, 8))
-
         self.download_button = ttk.Button(
-            self.frame, text="Добавить в очередь", command=self.start_download
+            main_tab, text="Добавить в очередь", command=self.start_download
         )
         self.download_button.pack(fill="x", pady=(4, 8))
 
-        queue_frame = ttk.LabelFrame(self.frame, text="Очередь загрузок", padding=6)
-        queue_frame.pack(fill="x", pady=(0, 6))
+        queue_frame = ttk.LabelFrame(main_tab, text="Очередь загрузок", padding=6)
+        queue_frame.pack(fill="both", expand=True, pady=(0, 6))
 
         self.queue_count_var = tk.StringVar(value="В очереди: 0  •  Скачано: 0")
         self.queue_count_label = ttk.Label(queue_frame, textvariable=self.queue_count_var)
         self.queue_count_label.pack(anchor="w")
 
         list_frame = ttk.Frame(queue_frame)
-        list_frame.pack(fill="x", pady=(4, 0))
+        list_frame.pack(fill="both", expand=True, pady=(4, 0))
 
         self.queue_scroll = ttk.Scrollbar(list_frame)
         self.queue_scroll.pack(side="right", fill="y")
 
         self.queue_listbox = tk.Listbox(
             list_frame,
-            height=5,
+            height=8,
             yscrollcommand=self.queue_scroll.set,
             relief="solid",
             borderwidth=1,
@@ -308,29 +224,22 @@ class YouTubeDownloaderApp:
         self.queue_listbox.pack(side="left", fill="both", expand=True)
         self.queue_scroll.config(command=self.queue_listbox.yview)
 
-        self.progress = ttk.Progressbar(self.frame, mode="determinate")
+        self.progress = ttk.Progressbar(main_tab, mode="determinate")
         self.progress.pack(fill="x", pady=(0, 6))
 
         self.status_var = tk.StringVar(value="Готов к работе")
         self.status_label = ttk.Label(
-            self.frame, textvariable=self.status_var, anchor="center"
+            main_tab, textvariable=self.status_var, anchor="center"
         )
         self.status_label.pack(fill="x")
 
-        log_frame = ttk.LabelFrame(self.frame, text="Журнал", padding=6)
-        log_frame.pack(fill="both", expand=True, pady=(6, 6))
-
-        self.log_text = tk.Text(log_frame, height=6, wrap="word", state="disabled",
-                                relief="solid", borderwidth=1)
-        self.log_text.pack(fill="both", expand=True)
-
         self.vpn_var = tk.StringVar(value="Проверка VPN...")
         self.vpn_label = ttk.Label(
-            self.frame, textvariable=self.vpn_var, anchor="center"
+            main_tab, textvariable=self.vpn_var, anchor="center"
         )
         self.vpn_label.pack(fill="x", pady=(4, 0))
 
-        vpn_buttons = ttk.Frame(self.frame)
+        vpn_buttons = ttk.Frame(main_tab)
         vpn_buttons.pack(fill="x", pady=(6, 0))
 
         self.refresh_vpn_button = ttk.Button(
@@ -344,6 +253,107 @@ class YouTubeDownloaderApp:
             command=self.reconnect_vpn,
         )
         self.reconnect_vpn_button.pack(side="left", fill="x", expand=True, padx=(3, 0))
+
+        # ---------------- Настройки ----------------
+        self.quality_label = ttk.Label(settings_tab, text="Качество:")
+        self.quality_label.pack(anchor="w")
+
+        self.quality_var = tk.StringVar(value="720p (по умолчанию)")
+        self.quality_combo = ttk.Combobox(
+            settings_tab,
+            textvariable=self.quality_var,
+            values=list(QUALITY_OPTIONS.keys()),
+            state="readonly",
+            width=40,
+        )
+        self.quality_combo.pack(anchor="w", pady=(4, 8))
+
+        self.proxy_label = ttk.Label(settings_tab, text="Прокси (необязательно):")
+        self.proxy_label.pack(anchor="w")
+
+        self.proxy_var = tk.StringVar(value="")
+        self.proxy_entry = ttk.Entry(settings_tab, textvariable=self.proxy_var)
+        self.proxy_entry.pack(fill="x", pady=(4, 4))
+        self.proxy_entry.bind("<Control-v>", lambda e: self.paste_to(self.proxy_entry))
+        self.setup_context_menu(self.proxy_entry)
+
+        self.proxy_hint = ttk.Label(
+            settings_tab,
+            text="Пример: http://127.0.0.1:8080 или socks5://127.0.0.1:1080",
+            foreground="gray",
+        )
+        self.proxy_hint.pack(anchor="w", pady=(0, 8))
+
+        self.ru_audio_var = tk.BooleanVar(value=True)
+        self.ru_audio_check = ttk.Checkbutton(
+            settings_tab,
+            text="Русская аудиодорожка (если есть)",
+            variable=self.ru_audio_var,
+        )
+        self.ru_audio_check.pack(anchor="w", pady=(0, 4))
+
+        self.translate_var = tk.BooleanVar(value=True)
+        self.translate_check = ttk.Checkbutton(
+            settings_tab,
+            text="Переводить название на русский",
+            variable=self.translate_var,
+        )
+        self.translate_check.pack(anchor="w", pady=(0, 4))
+
+        self.monitor_var = tk.BooleanVar(value=True)
+        self.monitor_check = ttk.Checkbutton(
+            settings_tab,
+            text="Следить за буфером обмена (автоматически добавлять ссылки)",
+            variable=self.monitor_var,
+        )
+        self.monitor_check.pack(anchor="w", pady=(0, 8))
+
+        self.cookies_label = ttk.Label(
+            settings_tab,
+            text="cookies.txt (пусто = авто с рабочего стола):",
+        )
+        self.cookies_label.pack(anchor="w")
+
+        default_cookies = os.path.join(desktop_path(), "cookies.txt")
+        if not os.path.exists(default_cookies):
+            default_cookies = ""
+        self.cookies_var = tk.StringVar(value=default_cookies)
+        self.cookies_entry = ttk.Entry(settings_tab, textvariable=self.cookies_var)
+        self.cookies_entry.pack(fill="x", pady=(4, 4))
+
+        self.cookies_button = ttk.Button(
+            settings_tab,
+            text="Выбрать файл...",
+            command=self.choose_cookies_file,
+        )
+        self.cookies_button.pack(anchor="e", pady=(0, 4))
+
+        self.browser_cookies_var = tk.BooleanVar(value=False)
+        self.browser_cookies_check = ttk.Checkbutton(
+            settings_tab,
+            text="Взять cookies из Chrome (нужно закрыть Chrome!)",
+            variable=self.browser_cookies_var,
+        )
+        self.browser_cookies_check.pack(anchor="w", pady=(0, 8))
+
+        self.folder_label = ttk.Label(settings_tab, text="Папка для сохранения:")
+        self.folder_label.pack(anchor="w")
+
+        self.folder_var = tk.StringVar(value=desktop_path())
+        self.folder_entry = ttk.Entry(settings_tab, textvariable=self.folder_var)
+        self.folder_entry.pack(fill="x", pady=(4, 4))
+
+        self.folder_button = ttk.Button(
+            settings_tab, text="Выбрать...", command=self.choose_folder
+        )
+        self.folder_button.pack(anchor="e", pady=(0, 8))
+
+        log_frame = ttk.LabelFrame(settings_tab, text="Журнал", padding=6)
+        log_frame.pack(fill="both", expand=True, pady=(6, 6))
+
+        self.log_text = tk.Text(log_frame, height=10, wrap="word", state="disabled",
+                                relief="solid", borderwidth=1)
+        self.log_text.pack(fill="both", expand=True)
 
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
@@ -528,6 +538,8 @@ class YouTubeDownloaderApp:
             "logger": LogCapture(),
             "merge_output_format": "mp4",
         }
+        if os.path.exists(os.path.join(SCRIPT_DIR, "ffmpeg.exe")):
+            opts["ffmpeg_location"] = SCRIPT_DIR
         if fmt:
             opts["format"] = fmt
         if skip:
