@@ -445,7 +445,8 @@ class YouTubeDownloaderApp:
 
     def process(self, vid, url):
         self.set_status(f"Обработка {vid}...")
-        folder = self.folder_var.get()
+        base_folder = self.folder_var.get()
+        date_folder = os.path.join(base_folder, datetime.date.today().strftime("%d.%m.%Y"))
         try:
             original_title = self.extract_meta(url)
             if self.translate_var.get():
@@ -453,7 +454,7 @@ class YouTubeDownloaderApp:
             else:
                 final_title = original_title or vid
             fname = clean_filename(final_title)
-            outtmpl = os.path.join(folder, fname + ".%(ext)s")
+            outtmpl = os.path.join(date_folder, fname + ".%(ext)s")
             ok, path, err = self.download_one(url, outtmpl)
             if ok:
                 record = {
@@ -511,7 +512,7 @@ class YouTubeDownloaderApp:
         opts = None
         for f, client in attempts:
             try:
-                os.makedirs(self.folder_var.get(), exist_ok=True)
+                os.makedirs(os.path.dirname(outtmpl), exist_ok=True)
                 opts = self.build_opts(client, f, outtmpl)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
