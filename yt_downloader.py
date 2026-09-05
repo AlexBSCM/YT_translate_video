@@ -89,6 +89,21 @@ def extract_video_id(text):
     return None
 
 
+def extract_all_video_ids(text):
+    if not text:
+        return []
+    found = []
+    seen = set()
+    for rx in YT_PATTERNS:
+        for m in rx.finditer(text):
+            vid = m.group(1)
+            if vid not in seen:
+                seen.add(vid)
+                found.append((m.start(), vid))
+    found.sort(key=lambda x: x[0])
+    return [vid for _pos, vid in found]
+
+
 def has_cyrillic(text):
     return bool(CYRILLIC_RE.search(text or ""))
 
@@ -182,21 +197,31 @@ class YouTubeDownloaderApp:
         self.notebook.add(settings_tab, text="Настройки")
 
         # ---------------- Главная ----------------
-        self.url_label = ttk.Label(main_tab, text="Ссылка на видео:")
+        self.url_label = ttk.Label(
+            main_tab, text="Ссылки на видео (можно несколько — по одной в строке):"
+        )
         self.url_label.pack(anchor="w")
 
-        self.url_entry = ttk.Entry(main_tab, width=70)
-        self.url_entry.pack(fill="x", pady=(4, 4))
-        self.url_entry.bind("<Return>", lambda e: self.start_download())
-        self.url_entry.bind("<Control-v>", lambda e: self.paste_to(self.url_entry))
+        url_frame = ttk.Frame(main_tab)
+        url_frame.pack(fill="x", pady=(4, 4))
+        self.url_scroll = ttk.Scrollbar(url_frame)
+        self.url_scroll.pack(side="right", fill="y")
+        self.url_text = tk.Text(
+            url_frame, height=4, wrap="word", relief="solid", borderwidth=1,
+            yscrollcommand=self.url_scroll.set,
+        )
+        self.url_text.pack(side="left", fill="both", expand=True)
+        self.url_scroll.config(command=self.url_text.yview)
+        self.url_text.bind("<Control-Return>", lambda e: self.start_download())
+        self.url_text.bind("<Control-v>", lambda e: self.paste_to(self.url_text))
 
         self.paste_button = ttk.Button(
-            main_tab, text="Вставить", command=lambda: self.paste_to(self.url_entry)
+            main_tab, text="Вставить", command=lambda: self.paste_to(self.url_text)
         )
         self.paste_button.pack(anchor="e", pady=(0, 8))
 
-        self.setup_context_menu(self.url_entry)
-        self.url_entry.focus_set()
+        self.setup_context_menu(self.url_text)
+        self.url_text.focus_set()
 
         self.download_button = ttk.Button(
             main_tab, text="Добавить в очередь", command=self.start_download
@@ -404,12 +429,20 @@ class YouTubeDownloaderApp:
     # ---------- queue / worker ----------
 
     def start_download(self):
-        url = self.url_entry.get().strip()
-        if not url:
-            messagebox.showwarning("Внимание", "Введите ссылку на видео")
+        text = self.url_text.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showwarning("Внимание", "Вставьте ссылку или список ссылок")
             return
-        vid = extract_video_id(url) or url
-        self.enqueue(vid, url, source="вручную")
+        ids = extract_all_video_ids(text)
+        if ids:
+            added = 0
+            for vid in ids:
+                if self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="вручную"):
+                    added += 1
+            self.log(f"Добавлено в очередь: {added} из {len(ids)}")
+        else:
+            self.enqueue(text, text, source="вручную")
+        self.url_text.delete("1.0", tk.END)
 
     def enqueue(self, vid, url, source="clipboard"):
         with self.cond:
@@ -703,8 +736,11 @@ class YouTubeDownloaderApp:
             text = self.root.clipboard_get()
         except tk.TclError:
             return "break"
-        widget.delete(0, tk.END)
-        widget.insert(0, text)
+        if isinstance(widget, tk.Text):
+            widget.insert(tk.INSERT, text)
+        else:
+            widget.delete(0, tk.END)
+            widget.insert(0, text)
         return "break"
 
     def choose_folder(self):
