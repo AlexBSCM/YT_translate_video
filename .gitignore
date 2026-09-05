@@ -1,0 +1,12 @@
+# Большие бинарники (GitHub не пропускает файлы >100 МБ)
+*.exe
+*.dll
+
+# Кэш Python
+__pycache__/
+*.pyc
+
+# Локальные данные и настройки
+downloaded.json
+cookies.txt
+opencode.json
