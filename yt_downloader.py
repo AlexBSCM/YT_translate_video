@@ -30,8 +30,8 @@ YT_PATTERNS = [
 ]
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
-# Белый список: вырезаем всё, кроме букв, цифр, пробелов и знаков . , : … + -
-NOT_ALLOWED_RE = re.compile(r"[^\w\s.,:…+\-]", re.UNICODE)
+# Белый список: вырезаем всё, кроме букв, цифр, пробелов и знаков . , … + -
+NOT_ALLOWED_RE = re.compile(r"[^\w\s.,…+\-]", re.UNICODE)
 
 
 def find_node():
