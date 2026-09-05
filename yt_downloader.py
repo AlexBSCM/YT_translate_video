@@ -231,9 +231,17 @@ class YouTubeDownloaderApp:
         queue_frame = ttk.LabelFrame(main_tab, text="Очередь загрузок", padding=6)
         queue_frame.pack(fill="both", expand=True, pady=(0, 6))
 
+        qhead = ttk.Frame(queue_frame)
+        qhead.pack(fill="x")
+
         self.queue_count_var = tk.StringVar(value="В очереди: 0  •  Скачано: 0")
-        self.queue_count_label = ttk.Label(queue_frame, textvariable=self.queue_count_var)
-        self.queue_count_label.pack(anchor="w")
+        self.queue_count_label = ttk.Label(qhead, textvariable=self.queue_count_var)
+        self.queue_count_label.pack(side="left")
+
+        self.copy_queue_button = ttk.Button(
+            qhead, text="Копировать", command=self.copy_queue
+        )
+        self.copy_queue_button.pack(side="right")
 
         list_frame = ttk.Frame(queue_frame)
         list_frame.pack(fill="both", expand=True, pady=(4, 0))
@@ -250,6 +258,7 @@ class YouTubeDownloaderApp:
         )
         self.queue_listbox.pack(side="left", fill="both", expand=True)
         self.queue_scroll.config(command=self.queue_listbox.yview)
+        self.queue_listbox.bind("<Control-c>", lambda e: self.copy_queue())
 
         self.progress = ttk.Progressbar(main_tab, mode="determinate")
         self.progress.pack(fill="x", pady=(0, 6))
@@ -658,6 +667,25 @@ class YouTubeDownloaderApp:
         if not cur and not pend:
             self.queue_listbox.insert(tk.END, "  (пусто)")
         self.queue_count_var.set(f"В очереди: {len(pend)}  •  Скачано: {done}")
+
+    def copy_queue(self):
+        with self.cond:
+            urls = []
+            if self.current:
+                urls.append(self.current[1])
+            for _vid, url in self.pending:
+                urls.append(url)
+        if not urls:
+            self.log("Очередь пуста — копировать нечего")
+            return
+        text = "\n".join(urls)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()
+            self.log(f"Скопировано в буфер: {len(urls)} ссылок")
+        except tk.TclError as e:
+            self.log(f"Не удалось скопировать: {e}")
 
     # ---------- clipboard monitor ----------
 
