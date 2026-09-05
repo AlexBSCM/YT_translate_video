@@ -582,6 +582,7 @@ class YouTubeDownloaderApp:
             "http error 403", "unable to download", "getaddrinfo", "failed to resolve",
             "temporary failure", "timed out", "timeout", "connection", "reset by peer",
             "remote end closed", "http error 5", "eof occurred", "ssl", "network",
+            "too slow", "throttl",
         )
         return any(m in d for m in markers)
 
@@ -589,10 +590,12 @@ class YouTubeDownloaderApp:
         opts = {
             "outtmpl": outtmpl or os.path.join(self.folder_var.get(), "%(title)s.%(ext)s"),
             "noplaylist": True,
-            "retries": 10,
-            "fragment_retries": 10,
-            "socket_timeout": 30,
+            "retries": 5,
+            "fragment_retries": 5,
+            "socket_timeout": 15,
             "force_ipv4": True,
+            "throttled_rate": 100000,
+            "concurrent_fragment_downloads": 4,
             "logger": LogCapture(),
             "merge_output_format": "mp4",
         }
