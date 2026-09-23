@@ -8,5 +8,6 @@ __pycache__/
 
 # Локальные данные и настройки
 downloaded.json
+queue.json
 cookies.txt
 opencode.json

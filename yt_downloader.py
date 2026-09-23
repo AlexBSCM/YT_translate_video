@@ -19,6 +19,67 @@ NODE_PATHS = [
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADED_FILE = os.path.join(SCRIPT_DIR, "downloaded.json")
+QUEUE_FILE = os.path.join(SCRIPT_DIR, "queue.json")
+
+
+def _today_folder_name(date=None):
+    d = date or datetime.date.today()
+    return d.strftime("%d.%m.%Y")
+
+
+def load_queue_file(path=QUEUE_FILE):
+    try:
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        if not content:
+            return []
+        data = json.loads(content)
+        if isinstance(data, dict):
+            data = data.get("items", [])
+        if not isinstance(data, list):
+            return []
+        items = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            vid = (entry.get("video_id") or "").strip()
+            url = (entry.get("url") or "").strip()
+            if vid and not url:
+                url = f"https://www.youtube.com/watch?v={vid}"
+            if not vid or not url:
+                continue
+            try:
+                attempts = int(entry.get("attempts") or 0)
+            except (TypeError, ValueError):
+                attempts = 0
+            items.append({
+                "video_id": vid,
+                "url": url,
+                "date_str": (entry.get("date_str") or "").strip() or None,
+                "added_at": entry.get("added_at"),
+                "attempts": max(0, attempts),
+            })
+        return items
+    except Exception as e:
+        print("load_queue error:", e)
+        return []
+
+
+def save_queue_file(items, path=QUEUE_FILE):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, path)
+    except Exception as e:
+        print("save_queue error:", e)
 
 CLIPBOARD_POLL_MS = 1500
 
@@ -174,9 +235,12 @@ class YouTubeDownloaderApp:
         root.resizable(True, True)
 
         self.cond = threading.Condition()
+        self._persist_lock = threading.Lock()
         self.pending = deque()
         self.active_ids = set()
         self.failed_ids = set()
+        self.failed_info = {}
+        self.queue_meta = {}
         self.downloaded_ids = set()
         self.downloaded_records = []
         self.current = None
@@ -391,6 +455,9 @@ class YouTubeDownloaderApp:
                                 relief="solid", borderwidth=1)
         self.log_text.pack(fill="both", expand=True)
 
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.restore_queue()
+
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
 
@@ -435,6 +502,83 @@ class YouTubeDownloaderApp:
         except Exception as e:
             self.log(f"Не удалось записать downloaded.json: {e}")
 
+    # ---------- unfinished queue persistence ----------
+
+    def persist_queue(self):
+        with self.cond:
+            ordered = []
+            seen = set()
+            if self.current:
+                ordered.append(self.current)
+            ordered.extend(list(self.pending))
+            items = []
+            for vid, url in ordered:
+                if vid in seen or vid in self.downloaded_ids:
+                    continue
+                seen.add(vid)
+                meta = self.queue_meta.get(vid, {})
+                items.append({
+                    "video_id": vid,
+                    "url": url,
+                    "date_str": meta.get("date_str") or _today_folder_name(),
+                    "added_at": meta.get("added_at"),
+                    "attempts": meta.get("attempts", 0),
+                })
+            for vid, info in self.failed_info.items():
+                if vid in seen or vid in self.downloaded_ids:
+                    continue
+                seen.add(vid)
+                meta = self.queue_meta.get(vid, {})
+                items.append({
+                    "video_id": vid,
+                    "url": info.get("url") or f"https://www.youtube.com/watch?v={vid}",
+                    "date_str": meta.get("date_str") or _today_folder_name(),
+                    "added_at": meta.get("added_at"),
+                    "attempts": meta.get("attempts", 0),
+                })
+        with self._persist_lock:
+            save_queue_file(items)
+
+    def restore_queue(self):
+        stored = load_queue_file()
+        if not stored:
+            return
+        added = 0
+        with self.cond:
+            for entry in stored:
+                vid = entry.get("video_id")
+                url = entry.get("url")
+                if not vid or not url:
+                    continue
+                if vid in self.downloaded_ids or vid in self.active_ids:
+                    continue
+                self.active_ids.add(vid)
+                self.pending.append((vid, url))
+                self.queue_meta[vid] = {
+                    "date_str": entry.get("date_str") or _today_folder_name(),
+                    "added_at": entry.get("added_at"),
+                    "attempts": entry.get("attempts", 0),
+                }
+                self.failed_ids.discard(vid)
+                self.failed_info.pop(vid, None)
+                added += 1
+            if added:
+                self.cond.notify_all()
+        if added:
+            self.log(f"Восстановлено недокачанных: {added} (докачка продолжится)")
+            self.refresh_queue_display()
+        self.persist_queue()
+
+    def on_close(self):
+        try:
+            self.persist_queue()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
     # ---------- queue / worker ----------
 
     def start_download(self):
@@ -464,7 +608,13 @@ class YouTubeDownloaderApp:
                 return False
             self.active_ids.add(vid)
             self.pending.append((vid, url))
+            self.queue_meta[vid] = {
+                "date_str": _today_folder_name(),
+                "added_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "attempts": 0,
+            }
             self.cond.notify()
+        self.persist_queue()
         self.log(f"В очередь [{source}]: {vid}")
         self.root.after(0, self.refresh_queue_display)
         return True
@@ -476,6 +626,7 @@ class YouTubeDownloaderApp:
                     self.cond.wait()
                 vid, url = self.pending.popleft()
                 self.current = (vid, url)
+            self.persist_queue()
             self.root.after(0, self.refresh_queue_display)
             try:
                 self.process(vid, url)
@@ -483,12 +634,16 @@ class YouTubeDownloaderApp:
                 with self.cond:
                     self.current = None
                     self.active_ids.discard(vid)
+                self.persist_queue()
                 self.root.after(0, self.refresh_queue_display)
 
     def process(self, vid, url):
         self.set_status(f"Обработка {vid}...")
+        with self.cond:
+            meta = self.queue_meta.get(vid, {})
+            date_str = meta.get("date_str") or _today_folder_name()
         base_folder = self.folder_var.get()
-        date_folder = os.path.join(base_folder, datetime.date.today().strftime("%d.%m.%Y"))
+        date_folder = os.path.join(base_folder, date_str)
         try:
             original_title = self.extract_meta(url)
             if self.translate_var.get():
@@ -510,17 +665,33 @@ class YouTubeDownloaderApp:
                 with self.cond:
                     self.downloaded_ids.add(vid)
                     self.downloaded_records.append(record)
+                    self.queue_meta.pop(vid, None)
+                    self.failed_ids.discard(vid)
+                    self.failed_info.pop(vid, None)
                 self.append_record(record)
+                self.persist_queue()
                 self.log(f"Скачано: {final_title}")
                 self.set_status("Готово!")
             else:
                 with self.cond:
                     self.failed_ids.add(vid)
+                    self.failed_info[vid] = {"url": url}
+                    cur = self.queue_meta.get(vid, {})
+                    cur["attempts"] = cur.get("attempts", 0) + 1
+                    cur.setdefault("date_str", date_str)
+                    self.queue_meta[vid] = cur
+                self.persist_queue()
                 self.log(f"Ошибка {vid}: {err[:300]}")
                 self.set_status("Ошибка (см. журнал)")
         except Exception as e:
             with self.cond:
                 self.failed_ids.add(vid)
+                self.failed_info[vid] = {"url": url}
+                cur = self.queue_meta.get(vid, {})
+                cur["attempts"] = cur.get("attempts", 0) + 1
+                cur.setdefault("date_str", date_str)
+                self.queue_meta[vid] = cur
+            self.persist_queue()
             self.log(f"Сбой {vid}: {e}")
             self.set_status("Ошибка (см. журнал)")
 
@@ -595,6 +766,7 @@ class YouTubeDownloaderApp:
         opts = {
             "outtmpl": outtmpl or os.path.join(self.folder_var.get(), "%(title)s.%(ext)s"),
             "noplaylist": True,
+            "continuedl": True,
             "retries": 5,
             "fragment_retries": 5,
             "socket_timeout": 15,
