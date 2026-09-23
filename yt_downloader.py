@@ -554,6 +554,7 @@ class YouTubeDownloaderApp:
         opts = None
         for _round in range(2):
             for f, client in attempts:
+                opts = None
                 try:
                     os.makedirs(os.path.dirname(outtmpl), exist_ok=True)
                     opts = self.build_opts(client, f, outtmpl)
@@ -569,10 +570,14 @@ class YouTubeDownloaderApp:
                     detail = str(e).strip()
                     if not detail and opts is not None:
                         detail = "\n".join(opts["logger"].lines[-50:])
+                    if not detail:
+                        detail = str(e) or repr(e)
                     last_error = detail
-                    if not self._is_retryable(detail):
-                        return False, None, detail
-                    time.sleep(2)
+                    # Недоступность основного формата не должна отменять
+                    # следующий вариант: для некоторых видео web_embedded
+                    # отдаёт только storyboard, а android всё ещё доступен.
+                    if self._is_retryable(detail):
+                        time.sleep(2)
         return False, None, last_error
 
     @staticmethod
