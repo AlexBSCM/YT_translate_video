@@ -91,8 +91,8 @@ YT_PATTERNS = [
 ]
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
-# Белый список: вырезаем всё, кроме букв, цифр, пробелов и знаков . , … + -
-NOT_ALLOWED_RE = re.compile(r"[^\w\s.,…+\-]", re.UNICODE)
+# Белый список: вырезаем всё, кроме букв, цифр, пробелов и знаков . , … + - ( )
+NOT_ALLOWED_RE = re.compile(r"[^\w\s.,…+\-()]", re.UNICODE)
 
 
 def find_node():
@@ -178,27 +178,51 @@ def clean_filename(name):
     return name or "video"
 
 
-def translate_to_ru(text):
-    if not text or has_cyrillic(text):
-        return text
-    try:
+def _try_translator(engine, text):
+    if engine == "google":
         from deep_translator import GoogleTranslator
         result = GoogleTranslator(source="auto", target="ru").translate(text)
-        return (result or "").strip() or text
-    except Exception:
-        return text
+    elif engine == "mymemory":
+        # MyMemory не понимает source="auto" и короткие коды: только явный
+        # язык полными именами (english -> russian).
+        from deep_translator import MyMemoryTranslator
+        result = MyMemoryTranslator(source="english", target="russian").translate(text)
+    else:
+        raise ValueError(f"Неизвестный переводчик: {engine}")
+    return (result or "").strip()
+
+
+def translate_to_ru(text):
+    """Переводит текст на русский.
+
+    Возвращает (перевод, ошибка): при отсутствии необходимости перевода
+    или при успехе ошибка равна None; при неудаче перевод равен исходному
+    тексту, а ошибка содержит причину.
+    """
+    if not text or has_cyrillic(text):
+        return text, None
+    errors = []
+    for engine in ("google", "mymemory"):
+        try:
+            result = _try_translator(engine, text)
+            if result and result.lower() != text.strip().lower():
+                return result, None
+        except Exception as e:
+            errors.append(f"{engine}: {e}")
+    return text, ("; ".join(errors) if errors else "переводчики недоступны")
 
 
 def build_final_title(original):
+    """Возвращает (итоговое название, ошибка перевода или None)."""
     original = (original or "").strip()
     if not original:
-        return "video"
+        return "video", None
     if has_cyrillic(original):
-        return original
-    translated = translate_to_ru(original)
+        return original, None
+    translated, error = translate_to_ru(original)
     if not translated or translated.strip().lower() == original.strip().lower():
-        return original
-    return f"{translated} ({original})"
+        return original, error
+    return f"{translated} ({original})", None
 
 
 QUALITY_OPTIONS = {
@@ -647,7 +671,9 @@ class YouTubeDownloaderApp:
         try:
             original_title = self.extract_meta(url)
             if self.translate_var.get():
-                final_title = build_final_title(original_title)
+                final_title, trans_error = build_final_title(original_title)
+                if trans_error:
+                    self.log(f"Перевод названия не удался ({trans_error}); сохранён оригинал")
             else:
                 final_title = original_title or vid
             fname = clean_filename(final_title)
