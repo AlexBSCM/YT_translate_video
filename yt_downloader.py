@@ -226,8 +226,8 @@ def build_final_title(original):
 
 
 QUALITY_OPTIONS = {
-    "720p (по умолчанию)": "720",
-    "1080p": "1080",
+    "1080p (по умолчанию)": "1080",
+    "720p": "720",
     "480p": "480",
     "360p": "360",
     "Лучшее": "best",
@@ -382,7 +382,7 @@ class YouTubeDownloaderApp:
         self.quality_label = ttk.Label(settings_tab, text="Качество:")
         self.quality_label.pack(anchor="w")
 
-        self.quality_var = tk.StringVar(value="720p (по умолчанию)")
+        self.quality_var = tk.StringVar(value="1080p (по умолчанию)")
         self.quality_combo = ttk.Combobox(
             settings_tab,
             textvariable=self.quality_var,
@@ -906,8 +906,7 @@ class YouTubeDownloaderApp:
                 text = ""
             if text and text != self._last_clip:
                 self._last_clip = text
-                vid = extract_video_id(text)
-                if vid:
+                for vid in extract_all_video_ids(text):
                     self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="clipboard")
         self.root.after(CLIPBOARD_POLL_MS, self.poll_clipboard)
 
