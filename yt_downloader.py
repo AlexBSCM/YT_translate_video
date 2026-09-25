@@ -722,7 +722,7 @@ class YouTubeDownloaderApp:
             self.set_status("Ошибка (см. журнал)")
 
     def extract_meta(self, url):
-        for client in [["web_embedded"], ["android_vr"], ["android"]]:
+        for client in [None, ["web_embedded"], ["android_vr"], ["android"]]:
             try:
                 opts = self.build_opts(client, None, None, skip=True)
                 with yt_dlp.YoutubeDL(opts) as ydl:
@@ -743,7 +743,10 @@ class YouTubeDownloaderApp:
                 f"/bestvideo[height<={quality}]+bestaudio"
                 f"/best[height<={quality}]"
             )
+        # Клиенты по умолчанию — первыми: только они отдают даб-дорожки
+        # (включая автодубляж). web_embedded/android — запасные варианты.
         attempts = [
+            (fmt, None),
             (fmt, ["web_embedded"]),
             ("18", ["android"]),
         ]
