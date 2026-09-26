@@ -669,7 +669,24 @@ class YouTubeDownloaderApp:
         base_folder = self.folder_var.get()
         date_folder = os.path.join(base_folder, date_str)
         try:
-            original_title = self.extract_meta(url)
+            original_title, is_live, live_status = self.extract_meta(url)
+            if is_live or live_status in ("is_live", "is_upcoming"):
+                reason = (
+                    "запланированная трансляция ещё не началась"
+                    if live_status == "is_upcoming"
+                    else "прямой эфир (трансляция идёт)"
+                )
+                with self.cond:
+                    self.failed_ids.add(vid)
+                    self.failed_info[vid] = {"url": url, "reason": "live"}
+                    cur = self.queue_meta.get(vid, {})
+                    cur["attempts"] = cur.get("attempts", 0) + 1
+                    cur.setdefault("date_str", date_str)
+                    self.queue_meta[vid] = cur
+                self.persist_queue()
+                self.log(f"Пропуск {vid}: {reason} — качание эфиров не поддерживается")
+                self.set_status("Пропущен эфир (см. журнал)")
+                return
             if self.translate_var.get():
                 final_title, trans_error = build_final_title(original_title)
                 if trans_error:
@@ -727,10 +744,16 @@ class YouTubeDownloaderApp:
                 opts = self.build_opts(client, None, None, skip=True)
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    return info.get("title") or ""
+                    if not info:
+                        continue
+                    return (
+                        info.get("title") or "",
+                        bool(info.get("is_live")),
+                        info.get("live_status"),
+                    )
             except Exception:
                 continue
-        return ""
+        return "", False, None
 
     def download_one(self, url, outtmpl):
         quality = QUALITY_OPTIONS[self.quality_var.get()]
