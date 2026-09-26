@@ -54,12 +54,18 @@ def load_queue_file(path=QUEUE_FILE):
                 attempts = int(entry.get("attempts") or 0)
             except (TypeError, ValueError):
                 attempts = 0
+            try:
+                checks = int(entry.get("checks") or 0)
+            except (TypeError, ValueError):
+                checks = 0
             items.append({
                 "video_id": vid,
                 "url": url,
                 "date_str": (entry.get("date_str") or "").strip() or None,
                 "added_at": entry.get("added_at"),
                 "attempts": max(0, attempts),
+                "deferred": bool(entry.get("deferred")),
+                "checks": max(0, checks),
             })
         return items
     except Exception as e:
@@ -82,6 +88,10 @@ def save_queue_file(items, path=QUEUE_FILE):
         print("save_queue error:", e)
 
 CLIPBOARD_POLL_MS = 1500
+
+# Отложенные эфиры: интервал перепроверки окончания и лимит попыток
+LIVE_RECHECK_SEC = 300
+LIVE_MAX_CHECKS = 12
 
 YT_ID = r"[A-Za-z0-9_-]{11}"
 YT_PATTERNS = [
@@ -261,6 +271,7 @@ class YouTubeDownloaderApp:
         self.cond = threading.Condition()
         self._persist_lock = threading.Lock()
         self.pending = deque()
+        self.deferred_live = {}
         self.active_ids = set()
         self.failed_ids = set()
         self.failed_info = {}
@@ -424,6 +435,14 @@ class YouTubeDownloaderApp:
         )
         self.translate_check.pack(anchor="w", pady=(0, 4))
 
+        self.defer_live_var = tk.BooleanVar(value=True)
+        self.defer_live_check = ttk.Checkbutton(
+            settings_tab,
+            text="Эфиры: откладывать в конец очереди и докачивать после остальных",
+            variable=self.defer_live_var,
+        )
+        self.defer_live_check.pack(anchor="w", pady=(0, 4))
+
         self.monitor_var = tk.BooleanVar(value=True)
         self.monitor_check = ttk.Checkbutton(
             settings_tab,
@@ -560,6 +579,20 @@ class YouTubeDownloaderApp:
                     "added_at": meta.get("added_at"),
                     "attempts": meta.get("attempts", 0),
                 })
+            for vid, info in self.deferred_live.items():
+                if vid in seen or vid in self.downloaded_ids:
+                    continue
+                seen.add(vid)
+                meta = self.queue_meta.get(vid, {})
+                items.append({
+                    "video_id": vid,
+                    "url": info.get("url") or f"https://www.youtube.com/watch?v={vid}",
+                    "date_str": meta.get("date_str") or _today_folder_name(),
+                    "added_at": meta.get("added_at") or info.get("added_at"),
+                    "attempts": meta.get("attempts", 0),
+                    "deferred": True,
+                    "checks": info.get("checks", 0),
+                })
         with self._persist_lock:
             save_queue_file(items)
 
@@ -568,6 +601,7 @@ class YouTubeDownloaderApp:
         if not stored:
             return
         added = 0
+        deferred_added = 0
         with self.cond:
             for entry in stored:
                 vid = entry.get("video_id")
@@ -575,6 +609,20 @@ class YouTubeDownloaderApp:
                 if not vid or not url:
                     continue
                 if vid in self.downloaded_ids or vid in self.active_ids:
+                    continue
+                if entry.get("deferred"):
+                    self.active_ids.add(vid)
+                    self.deferred_live[vid] = {
+                        "url": url,
+                        "checks": max(0, entry.get("checks") or 0),
+                        "added_at": entry.get("added_at"),
+                    }
+                    self.queue_meta[vid] = {
+                        "date_str": entry.get("date_str") or _today_folder_name(),
+                        "added_at": entry.get("added_at"),
+                        "attempts": entry.get("attempts", 0),
+                    }
+                    deferred_added += 1
                     continue
                 self.active_ids.add(vid)
                 self.pending.append((vid, url))
@@ -590,6 +638,9 @@ class YouTubeDownloaderApp:
                 self.cond.notify_all()
         if added:
             self.log(f"Восстановлено недокачанных: {added} (докачка продолжится)")
+            self.refresh_queue_display()
+        if deferred_added:
+            self.log(f"Отложенных эфиров: {deferred_added} (докачаются после очереди)")
             self.refresh_queue_display()
         self.persist_queue()
 
@@ -646,22 +697,30 @@ class YouTubeDownloaderApp:
     def worker_loop(self):
         while True:
             with self.cond:
-                while not self.pending:
+                while not self.pending and not self.deferred_live:
                     self.cond.wait()
-                vid, url = self.pending.popleft()
+                if self.pending:
+                    # Обычные видео всегда раньше отложенных эфиров
+                    vid, url = self.pending.popleft()
+                    from_deferred = False
+                else:
+                    vid = next(iter(self.deferred_live))
+                    url = self.deferred_live[vid]["url"]
+                    from_deferred = True
                 self.current = (vid, url)
             self.persist_queue()
             self.root.after(0, self.refresh_queue_display)
             try:
-                self.process(vid, url)
+                self.process(vid, url, from_deferred=from_deferred)
             finally:
                 with self.cond:
                     self.current = None
-                    self.active_ids.discard(vid)
+                    if vid not in self.deferred_live:
+                        self.active_ids.discard(vid)
                 self.persist_queue()
                 self.root.after(0, self.refresh_queue_display)
 
-    def process(self, vid, url):
+    def process(self, vid, url, from_deferred=False):
         self.set_status(f"Обработка {vid}...")
         with self.cond:
             meta = self.queue_meta.get(vid, {})
@@ -676,6 +735,45 @@ class YouTubeDownloaderApp:
                     if live_status == "is_upcoming"
                     else "прямой эфир (трансляция идёт)"
                 )
+                if from_deferred:
+                    checks = self.deferred_live.get(vid, {}).get("checks", 0) + 1
+                    if checks >= LIVE_MAX_CHECKS:
+                        with self.cond:
+                            self.deferred_live.pop(vid, None)
+                            self.failed_ids.add(vid)
+                            self.failed_info[vid] = {"url": url, "reason": "live"}
+                            cur = self.queue_meta.get(vid, {})
+                            cur["attempts"] = cur.get("attempts", 0) + 1
+                            cur.setdefault("date_str", date_str)
+                            self.queue_meta[vid] = cur
+                        self.persist_queue()
+                        self.log(f"Пропуск {vid}: эфир не закончился за {LIVE_MAX_CHECKS} проверок — пропущен")
+                        self.set_status("Эфир пропущен (см. журнал)")
+                        return
+                    with self.cond:
+                        if vid in self.deferred_live:
+                            self.deferred_live[vid]["checks"] = checks
+                    self.persist_queue()
+                    self.log(f"Эфир {vid} ещё идёт (проверка {checks}/{LIVE_MAX_CHECKS}), следующая — через {LIVE_RECHECK_SEC // 60} мин")
+                    self.set_status(f"Эфир ещё идёт... проверка {checks}/{LIVE_MAX_CHECKS}")
+                    with self.cond:
+                        # Новые обычные видео разбудят раньше — они качаются первыми
+                        self.cond.wait(timeout=LIVE_RECHECK_SEC)
+                    return
+                if self.defer_live_var.get() and self.ask_defer_live(original_title, vid):
+                    with self.cond:
+                        self.deferred_live[vid] = {
+                            "url": url,
+                            "checks": 0,
+                            "added_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                        }
+                        cur = self.queue_meta.get(vid, {})
+                        cur.setdefault("date_str", date_str)
+                        self.queue_meta[vid] = cur
+                    self.persist_queue()
+                    self.log(f"Эфир отложен в конец очереди: {original_title or vid} ({vid}) — докачается после остальных")
+                    self.set_status("Эфир отложен (см. журнал)")
+                    return
                 with self.cond:
                     self.failed_ids.add(vid)
                     self.failed_info[vid] = {"url": url, "reason": "live"}
@@ -684,9 +782,13 @@ class YouTubeDownloaderApp:
                     cur.setdefault("date_str", date_str)
                     self.queue_meta[vid] = cur
                 self.persist_queue()
-                self.log(f"Пропуск {vid}: {reason} — качание эфиров не поддерживается")
+                self.log(f"Пропуск {vid}: {reason} — пропущен")
                 self.set_status("Пропущен эфир (см. журнал)")
                 return
+            if from_deferred:
+                with self.cond:
+                    self.deferred_live.pop(vid, None)
+                self.log(f"Эфир {vid} завершился — скачиваю")
             if self.translate_var.get():
                 final_title, trans_error = build_final_title(original_title)
                 if trans_error:
@@ -737,6 +839,29 @@ class YouTubeDownloaderApp:
             self.persist_queue()
             self.log(f"Сбой {vid}: {e}")
             self.set_status("Ошибка (см. журнал)")
+
+    def ask_defer_live(self, title, vid):
+        """Диалог из главного потока: отложить эфир в конец очереди?"""
+        result = {}
+        done = threading.Event()
+
+        def _do():
+            try:
+                self.set_status("Требуется решение по эфиру...")
+                result["answer"] = messagebox.askyesno(
+                    "Прямой эфир",
+                    f"«{(title or vid).strip()}» — прямой эфир или "
+                    "запланированная трансляция.\n\nОтложить в конец очереди "
+                    "и докачать, когда закончится?\n(«Нет» — пропустить это видео)",
+                )
+            except Exception:
+                result["answer"] = False
+            finally:
+                done.set()
+
+        self.root.after(0, _do)
+        done.wait()
+        return bool(result.get("answer", False))
 
     def extract_meta(self, url):
         for client in [None, ["web_embedded"], ["android_vr"], ["android"]]:
@@ -890,15 +1015,20 @@ class YouTubeDownloaderApp:
         with self.cond:
             cur = self.current
             pend = list(self.pending)
+            deferred = list(self.deferred_live.keys())
             done = len(self.downloaded_ids)
         self.queue_listbox.delete(0, tk.END)
         if cur:
             self.queue_listbox.insert(tk.END, f"> {cur[0]}")
         for vid, _url in pend:
             self.queue_listbox.insert(tk.END, f"  {vid}")
-        if not cur and not pend:
+        for vid in deferred:
+            self.queue_listbox.insert(tk.END, f"  {vid} (эфир — ждёт конца)")
+        if not cur and not pend and not deferred:
             self.queue_listbox.insert(tk.END, "  (пусто)")
-        self.queue_count_var.set(f"В очереди: {len(pend)}  •  Скачано: {done}")
+        self.queue_count_var.set(
+            f"В очереди: {len(pend)}  •  Эфиров отложено: {len(deferred)}  •  Скачано: {done}"
+        )
 
     def copy_queue(self):
         with self.cond:
@@ -907,6 +1037,8 @@ class YouTubeDownloaderApp:
                 urls.append(self.current[1])
             for _vid, url in self.pending:
                 urls.append(url)
+            for _vid, info in self.deferred_live.items():
+                urls.append(info["url"])
         if not urls:
             self.log("Очередь пуста — копировать нечего")
             return
