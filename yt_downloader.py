@@ -330,6 +330,12 @@ class YouTubeDownloaderApp:
         )
         self.download_button.pack(fill="x", pady=(4, 8))
 
+        # Кнопка "Скачать заново" — отдельное окно с выбором качества
+        self.redownload_button = ttk.Button(
+            main_tab, text="Скачать заново...", command=self.open_redownload_dialog
+        )
+        self.redownload_button.pack(fill="x", pady=(0, 8))
+
         queue_frame = ttk.LabelFrame(main_tab, text="Очередь загрузок", padding=6)
         queue_frame.pack(fill="both", expand=True, pady=(0, 6))
 
@@ -677,6 +683,66 @@ class YouTubeDownloaderApp:
         else:
             self.enqueue(text, text, source="вручную")
         self.url_text.delete("1.0", tk.END)
+
+    def open_redownload_dialog(self):
+        """Открывает диалог для повторного скачивания с выбором качества."""
+        win = tk.Toplevel(self.root)
+        win.title("Скачать заново")
+        win.geometry("520x220")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        ttk.Label(win, text="Ссылка на видео:").pack(anchor="w", padx=12, pady=(12, 4))
+
+        url_frame = ttk.Frame(win)
+        url_frame.pack(fill="x", padx=12)
+        url_entry = ttk.Entry(url_frame)
+        url_entry.pack(side="left", fill="x", expand=True)
+        url_entry.bind("<Control-v>", lambda e: self.paste_to(url_entry))
+        self.setup_context_menu(url_entry)
+        ttk.Button(url_frame, text="Вставить", command=lambda: self.paste_to(url_entry)).pack(side="left", padx=(6, 0))
+
+        ttk.Label(win, text="Качество:").pack(anchor="w", padx=12, pady=(12, 4))
+
+        quality_var = tk.StringVar(value="1080p (по умолчанию)")
+        quality_combo = ttk.Combobox(
+            win,
+            textvariable=quality_var,
+            values=list(QUALITY_OPTIONS.keys()),
+            state="readonly",
+            width=40,
+        )
+        quality_combo.pack(anchor="w", padx=12)
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", padx=12, pady=(16, 12))
+
+        def do_download():
+            url = url_entry.get().strip()
+            if not url:
+                messagebox.showwarning("Внимание", "Вставьте ссылку на видео", parent=win)
+                return
+            vids = extract_all_video_ids(url)
+            if not vids:
+                messagebox.showwarning("Внимание", "Ссылка не распознана как YouTube", parent=win)
+                return
+            # Добавляем в очередь с выбранным качеством
+            orig_quality = self.quality_var.get()
+            self.quality_var.set(quality_var.get())
+            added = 0
+            for vid in vids:
+                if self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="повторное"):
+                    added += 1
+            self.quality_var.set(orig_quality)
+            if added:
+                self.log(f"Скачать заново: добавлено {added} видео с качеством {quality_var.get()}")
+            win.destroy()
+
+        ttk.Button(btn_frame, text="Скачать", command=do_download).pack(side="right", padx=(6, 0))
+        ttk.Button(btn_frame, text="Отмена", command=win.destroy).pack(side="right")
+
+        url_entry.focus_set()
 
     def enqueue(self, vid, url, source="clipboard"):
         with self.cond:
