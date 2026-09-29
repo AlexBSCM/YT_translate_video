@@ -732,7 +732,7 @@ class YouTubeDownloaderApp:
             self.quality_var.set(quality_var.get())
             added = 0
             for vid in vids:
-                if self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="повторное"):
+                if self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="повторное", force=True):
                     added += 1
             self.quality_var.set(orig_quality)
             if added:
@@ -744,9 +744,9 @@ class YouTubeDownloaderApp:
 
         url_entry.focus_set()
 
-    def enqueue(self, vid, url, source="clipboard"):
+    def enqueue(self, vid, url, source="clipboard", force=False):
         with self.cond:
-            if vid in self.downloaded_ids:
+            if not force and vid in self.downloaded_ids:
                 self.log(f"Пропуск (уже скачано): {vid}")
                 return False
             if vid in self.active_ids:
