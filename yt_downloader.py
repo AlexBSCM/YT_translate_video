@@ -30,6 +30,41 @@ TEMP_KEEP_SUFFIX = ".part"
 TEMP_MAX_BYTES = 20 * 1024 * 1024 * 1024
 # Какие настройки скачивания действовали для каждого .part
 TEMP_STATE_FILE = os.path.join(SCRIPT_DIR, "temp_state.json")
+# Настройки вкладки «Настройки», включая выбранную папку сохранения
+SETTINGS_FILE = os.path.join(SCRIPT_DIR, "settings.json")
+
+
+def load_settings(path=SETTINGS_FILE):
+    """Читает сохранённые настройки. При отсутствии/битом файле — пустой dict."""
+    try:
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        if not content:
+            return {}
+        data = json.loads(content)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print("load_settings error:", e)
+        return {}
+
+
+def save_settings(data, path=SETTINGS_FILE):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        print("save_settings error:", e)
+        return False
 
 
 def load_temp_state():
@@ -423,6 +458,10 @@ class YouTubeDownloaderApp:
         self.current = None
         self._last_clip = ""
         self._last_pct = -1
+        self._settings_job = None
+
+        # Сохранённые настройки применяются к дефолтам всех полей
+        self.settings = load_settings()
 
         # Папка temp создаётся сразу; чистка — после восстановления очереди,
         # когда известны настройки качества и список видео в очереди
@@ -548,7 +587,7 @@ class YouTubeDownloaderApp:
         self.quality_label = ttk.Label(settings_tab, text="Качество:")
         self.quality_label.pack(anchor="w")
 
-        self.quality_var = tk.StringVar(value="1080p (по умолчанию)")
+        self.quality_var = tk.StringVar(value=self.default_quality())
         self.quality_combo = ttk.Combobox(
             settings_tab,
             textvariable=self.quality_var,
@@ -561,7 +600,7 @@ class YouTubeDownloaderApp:
         self.proxy_label = ttk.Label(settings_tab, text="Прокси (необязательно):")
         self.proxy_label.pack(anchor="w")
 
-        self.proxy_var = tk.StringVar(value="")
+        self.proxy_var = tk.StringVar(value=self.settings.get("proxy", ""))
         self.proxy_entry = ttk.Entry(settings_tab, textvariable=self.proxy_var)
         self.proxy_entry.pack(fill="x", pady=(4, 4))
         self.proxy_entry.bind("<Control-v>", lambda e: self.paste_to(self.proxy_entry))
@@ -574,7 +613,7 @@ class YouTubeDownloaderApp:
         )
         self.proxy_hint.pack(anchor="w", pady=(0, 8))
 
-        self.ru_audio_var = tk.BooleanVar(value=True)
+        self.ru_audio_var = tk.BooleanVar(value=self.default_flag("ru_audio", True))
         self.ru_audio_check = ttk.Checkbutton(
             settings_tab,
             text="Русская аудиодорожка (если есть)",
@@ -582,7 +621,7 @@ class YouTubeDownloaderApp:
         )
         self.ru_audio_check.pack(anchor="w", pady=(0, 4))
 
-        self.translate_var = tk.BooleanVar(value=True)
+        self.translate_var = tk.BooleanVar(value=self.default_flag("translate", True))
         self.translate_check = ttk.Checkbutton(
             settings_tab,
             text="Переводить название на русский",
@@ -590,7 +629,7 @@ class YouTubeDownloaderApp:
         )
         self.translate_check.pack(anchor="w", pady=(0, 4))
 
-        self.defer_live_var = tk.BooleanVar(value=True)
+        self.defer_live_var = tk.BooleanVar(value=self.default_flag("defer_live", True))
         self.defer_live_check = ttk.Checkbutton(
             settings_tab,
             text="Эфиры: откладывать в конец очереди и докачивать после остальных",
@@ -598,7 +637,7 @@ class YouTubeDownloaderApp:
         )
         self.defer_live_check.pack(anchor="w", pady=(0, 4))
 
-        self.monitor_var = tk.BooleanVar(value=True)
+        self.monitor_var = tk.BooleanVar(value=self.default_flag("monitor", True))
         self.monitor_check = ttk.Checkbutton(
             settings_tab,
             text="Следить за буфером обмена (автоматически добавлять ссылки)",
@@ -612,9 +651,11 @@ class YouTubeDownloaderApp:
         )
         self.cookies_label.pack(anchor="w")
 
-        default_cookies = os.path.join(desktop_path(), "cookies.txt")
-        if not os.path.exists(default_cookies):
-            default_cookies = ""
+        default_cookies = self.settings.get("cookies")
+        if default_cookies is None:
+            default_cookies = os.path.join(desktop_path(), "cookies.txt")
+            if not os.path.exists(default_cookies):
+                default_cookies = ""
         self.cookies_var = tk.StringVar(value=default_cookies)
         self.cookies_entry = ttk.Entry(settings_tab, textvariable=self.cookies_var)
         self.cookies_entry.pack(fill="x", pady=(4, 4))
@@ -626,7 +667,9 @@ class YouTubeDownloaderApp:
         )
         self.cookies_button.pack(anchor="e", pady=(0, 4))
 
-        self.browser_cookies_var = tk.BooleanVar(value=False)
+        self.browser_cookies_var = tk.BooleanVar(
+            value=self.default_flag("browser_cookies", False)
+        )
         self.browser_cookies_check = ttk.Checkbutton(
             settings_tab,
             text="Взять cookies из Chrome (нужно закрыть Chrome!)",
@@ -637,7 +680,7 @@ class YouTubeDownloaderApp:
         self.folder_label = ttk.Label(settings_tab, text="Папка для сохранения:")
         self.folder_label.pack(anchor="w")
 
-        self.folder_var = tk.StringVar(value=desktop_path())
+        self.folder_var = tk.StringVar(value=self.default_folder())
         self.folder_entry = ttk.Entry(settings_tab, textvariable=self.folder_var)
         self.folder_entry.pack(fill="x", pady=(4, 4))
 
@@ -654,6 +697,7 @@ class YouTubeDownloaderApp:
         self.log_text.pack(fill="both", expand=True)
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.watch_settings()
         self.restore_queue()
         self.clean_temp_for_startup()
 
@@ -665,6 +709,61 @@ class YouTubeDownloaderApp:
         self.refresh_queue_display()
 
     # ---------- persistence ----------
+
+    def default_folder(self):
+        """Выбранная папка сохранения из прошлого запуска, иначе Рабочий стол."""
+        saved = (self.settings.get("folder") or "").strip()
+        return saved or desktop_path()
+
+    def default_quality(self):
+        saved = self.settings.get("quality")
+        if saved in QUALITY_OPTIONS:
+            return saved
+        return "1080p (по умолчанию)"
+
+    def default_flag(self, key, fallback):
+        saved = self.settings.get(key)
+        return fallback if saved is None else bool(saved)
+
+    def collect_settings(self):
+        return {
+            "folder": self.folder_var.get(),
+            "quality": self.quality_var.get(),
+            "proxy": self.proxy_var.get(),
+            "ru_audio": bool(self.ru_audio_var.get()),
+            "translate": bool(self.translate_var.get()),
+            "defer_live": bool(self.defer_live_var.get()),
+            "monitor": bool(self.monitor_var.get()),
+            "cookies": self.cookies_var.get(),
+            "browser_cookies": bool(self.browser_cookies_var.get()),
+        }
+
+    def watch_settings(self):
+        """Любое изменение настроек сохраняет их (с задержкой, без спама)."""
+        for var in (
+            self.folder_var, self.quality_var, self.proxy_var, self.ru_audio_var,
+            self.translate_var, self.defer_live_var, self.monitor_var,
+            self.cookies_var, self.browser_cookies_var,
+        ):
+            var.trace_add("write", self.schedule_settings_save)
+
+    def schedule_settings_save(self, *_args):
+        if self._settings_job is not None:
+            try:
+                self.root.after_cancel(self._settings_job)
+            except Exception:
+                pass
+        try:
+            self._settings_job = self.root.after(400, self.save_settings_now)
+        except Exception:
+            self._settings_job = None
+
+    def save_settings_now(self):
+        self._settings_job = None
+        try:
+            save_settings(self.collect_settings())
+        except Exception as e:
+            print("save_settings_now error:", e)
 
     def temp_signature(self):
         """Подпись настроек скачивания: сменилась — докачка сбрасывается."""
@@ -821,6 +920,10 @@ class YouTubeDownloaderApp:
         self.persist_queue()
 
     def on_close(self):
+        try:
+            self.save_settings_now()
+        except Exception:
+            pass
         try:
             self.persist_queue()
         except Exception:

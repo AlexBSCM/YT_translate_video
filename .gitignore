@@ -10,5 +10,6 @@ __pycache__/
 downloaded.json
 queue.json
 temp_state.json
+settings.json
 cookies.txt
 opencode.json
