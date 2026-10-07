@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import shutil
 import datetime
 import subprocess
 import threading
@@ -20,6 +21,53 @@ NODE_PATHS = [
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOADED_FILE = os.path.join(SCRIPT_DIR, "downloaded.json")
 QUEUE_FILE = os.path.join(SCRIPT_DIR, "queue.json")
+
+# Всё качается сюда, готовый файл переносится в целевую папку.
+# .part сохраняются — это незавершённые загрузки для докачки.
+TEMP_FOLDER = r"C:\yt_temp"
+TEMP_KEEP_SUFFIX = ".part"
+
+
+def prepare_temp_folder():
+    """Создаёт папку temp и удаляет всё, кроме .part (докачка)."""
+    try:
+        os.makedirs(TEMP_FOLDER, exist_ok=True)
+    except Exception as e:
+        print("create temp folder error:", e)
+        return
+    try:
+        for entry in os.listdir(TEMP_FOLDER):
+            full = os.path.join(TEMP_FOLDER, entry)
+            if os.path.isdir(full):
+                try:
+                    import shutil
+
+                    shutil.rmtree(full, ignore_errors=True)
+                except Exception:
+                    pass
+                continue
+            if entry.lower().endswith(TEMP_KEEP_SUFFIX):
+                continue
+            try:
+                os.remove(full)
+            except Exception:
+                pass
+    except Exception as e:
+        print("clean temp folder error:", e)
+
+
+def move_to_target(path, date_folder, fname):
+    """Переносит готовый файл из temp в целевую папку. Возвращает итоговый путь."""
+    if not path or not os.path.exists(path):
+        return path
+    os.makedirs(date_folder, exist_ok=True)
+    dest = os.path.join(date_folder, fname + os.path.splitext(path)[1])
+    n = 1
+    while os.path.exists(dest):
+        dest = os.path.join(date_folder, f"{fname} ({n}){os.path.splitext(path)[1]}")
+        n += 1
+    shutil.move(path, dest)
+    return dest
 
 
 def _today_folder_name(date=None):
@@ -284,6 +332,9 @@ class YouTubeDownloaderApp:
         self.current = None
         self._last_clip = ""
         self._last_pct = -1
+
+        # Чистим временную папку от старых файлов (.part оставляем для докачки)
+        prepare_temp_folder()
 
         self.load_downloaded()
 
@@ -873,11 +924,17 @@ class YouTubeDownloaderApp:
             else:
                 final_title = original_title or vid
             fname = clean_filename(final_title)
-            outtmpl = os.path.join(date_folder, fname + ".%(ext)s")
+            # Качаем во временную папку на C:, имя с video_id — чтобы докачка
+            # находила свой .part даже если название перевелось иначе
+            outtmpl = os.path.join(TEMP_FOLDER, f"{vid}.%(ext)s")
             ok, path, err = self.download_one(url, outtmpl)
             if ok:
-                # Удаляем возможные временные файлы yt-dlp (.part, .ytdl, *.f*.mp4 и др.)
-                self._cleanup_temp_files(date_folder, fname, path)
+                try:
+                    path = move_to_target(path, date_folder, fname)
+                except Exception as e:
+                    self.log(f"Не удалось перенести файл из temp: {e}")
+                # Удаляем всё, что осталось в temp по этому видео
+                self._cleanup_temp_files(TEMP_FOLDER, vid)
                 record = {
                     "video_id": vid,
                     "url": url,
@@ -1018,16 +1075,11 @@ class YouTubeDownloaderApp:
         )
         return any(m in d for m in markers)
 
-    def _cleanup_temp_files(self, folder, base_name, final_path=None):
-        """Удаляет временные файлы yt-dlp (*.part, *.ytdl, *.f*.mp4 и др.) для данного видео."""
+    def _cleanup_temp_files(self, folder, vid):
+        """Удаляет остатки скачивания по video_id из папки temp."""
         try:
-            keep_name = None
-            if final_path:
-                keep_name = os.path.basename(final_path)
             for entry in os.listdir(folder):
-                if entry.startswith(base_name):
-                    if keep_name and entry == keep_name:
-                        continue
+                if entry.startswith(vid):
                     full = os.path.join(folder, entry)
                     try:
                         os.remove(full)
