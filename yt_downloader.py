@@ -876,6 +876,8 @@ class YouTubeDownloaderApp:
             outtmpl = os.path.join(date_folder, fname + ".%(ext)s")
             ok, path, err = self.download_one(url, outtmpl)
             if ok:
+                # Удаляем возможные временные файлы yt-dlp (.part, .ytdl, *.f*.mp4 и др.)
+                self._cleanup_temp_files(date_folder, fname, path)
                 record = {
                     "video_id": vid,
                     "url": url,
@@ -1015,6 +1017,24 @@ class YouTubeDownloaderApp:
             "too slow", "throttl",
         )
         return any(m in d for m in markers)
+
+    def _cleanup_temp_files(self, folder, base_name, final_path=None):
+        """Удаляет временные файлы yt-dlp (*.part, *.ytdl, *.f*.mp4 и др.) для данного видео."""
+        try:
+            keep_name = None
+            if final_path:
+                keep_name = os.path.basename(final_path)
+            for entry in os.listdir(folder):
+                if entry.startswith(base_name):
+                    if keep_name and entry == keep_name:
+                        continue
+                    full = os.path.join(folder, entry)
+                    try:
+                        os.remove(full)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def build_opts(self, client, fmt, outtmpl, skip=False):
         opts = {
