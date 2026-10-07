@@ -26,34 +26,125 @@ QUEUE_FILE = os.path.join(SCRIPT_DIR, "queue.json")
 # .part сохраняются — это незавершённые загрузки для докачки.
 TEMP_FOLDER = r"C:\yt_temp"
 TEMP_KEEP_SUFFIX = ".part"
+# Если temp разросся больше — самые старые .part удаляются
+TEMP_MAX_BYTES = 20 * 1024 * 1024 * 1024
+# Какие настройки скачивания действовали для каждого .part
+TEMP_STATE_FILE = os.path.join(SCRIPT_DIR, "temp_state.json")
 
 
-def prepare_temp_folder():
-    """Создаёт папку temp и удаляет всё, кроме .part (докачка)."""
+def load_temp_state():
+    try:
+        if os.path.exists(TEMP_STATE_FILE):
+            with open(TEMP_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_temp_state(state):
+    try:
+        with open(TEMP_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def prepare_temp_folder(queue_ids=None, signature=None):
+    """Готовит папку temp.
+
+    Удаляет всё, кроме .part. Оставляет .part только для видео из очереди и
+    только если настройки скачивания не менялись. Если размер превышает
+    TEMP_MAX_BYTES — удаляет самые старые .part. Возвращает число удалённых
+    файлов.
+    """
     try:
         os.makedirs(TEMP_FOLDER, exist_ok=True)
     except Exception as e:
         print("create temp folder error:", e)
-        return
+        return 0
     try:
-        for entry in os.listdir(TEMP_FOLDER):
-            full = os.path.join(TEMP_FOLDER, entry)
-            if os.path.isdir(full):
-                try:
-                    import shutil
+        entries = os.listdir(TEMP_FOLDER)
+    except Exception as e:
+        print("list temp folder error:", e)
+        return 0
 
-                    shutil.rmtree(full, ignore_errors=True)
-                except Exception:
-                    pass
-                continue
-            if entry.lower().endswith(TEMP_KEEP_SUFFIX):
-                continue
+    removed = 0
+    parts = []
+    for entry in entries:
+        full = os.path.join(TEMP_FOLDER, entry)
+        if os.path.isdir(full):
+            shutil.rmtree(full, ignore_errors=True)
+            removed += 1
+        elif entry.lower().endswith(TEMP_KEEP_SUFFIX):
+            parts.append((entry, full))
+        else:
             try:
                 os.remove(full)
+                removed += 1
             except Exception:
                 pass
-    except Exception as e:
-        print("clean temp folder error:", e)
+    if not parts:
+        save_temp_state({})
+        return removed
+
+    state = load_temp_state()
+    allowed = set(queue_ids or ())
+    survivors = []
+    for entry, full in parts:
+        vid = entry.split(".")[0]
+        # Сирота: видео больше не в очереди
+        if vid and vid not in allowed:
+            try:
+                os.remove(full)
+                removed += 1
+            except Exception:
+                pass
+            continue
+        # Сменились настройки скачивания — старый .part не подходит
+        if signature is not None and state.get(vid) not in (None, signature):
+            try:
+                os.remove(full)
+                removed += 1
+            except Exception:
+                pass
+            continue
+        survivors.append((vid, full))
+
+    new_state = {}
+    for vid, _full in survivors:
+        new_state[vid] = signature if signature is not None else state.get(vid)
+    save_temp_state(new_state)
+
+    try:
+        details = []
+        total = 0
+        for vid, full in survivors:
+            try:
+                size = os.path.getsize(full)
+                details.append((os.path.getmtime(full), size, full))
+                total += size
+            except OSError:
+                pass
+        if total > TEMP_MAX_BYTES:
+            details.sort(key=lambda x: x[0])
+            for _mtime, size, full in details:
+                if total <= TEMP_MAX_BYTES:
+                    break
+                try:
+                    os.remove(full)
+                    total -= size
+                    removed += 1
+                    # Запись в state тоже больше не нужна
+                    new_state.pop(os.path.basename(full).split(".")[0], None)
+                except OSError:
+                    pass
+            save_temp_state(new_state)
+    except Exception:
+        pass
+    return removed
 
 
 def move_to_target(path, date_folder, fname):
@@ -333,8 +424,12 @@ class YouTubeDownloaderApp:
         self._last_clip = ""
         self._last_pct = -1
 
-        # Чистим временную папку от старых файлов (.part оставляем для докачки)
-        prepare_temp_folder()
+        # Папка temp создаётся сразу; чистка — после восстановления очереди,
+        # когда известны настройки качества и список видео в очереди
+        try:
+            os.makedirs(TEMP_FOLDER, exist_ok=True)
+        except Exception:
+            pass
 
         self.load_downloaded()
 
@@ -560,6 +655,7 @@ class YouTubeDownloaderApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.restore_queue()
+        self.clean_temp_for_startup()
 
         self.worker_thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.worker_thread.start()
@@ -569,6 +665,23 @@ class YouTubeDownloaderApp:
         self.refresh_queue_display()
 
     # ---------- persistence ----------
+
+    def temp_signature(self):
+        """Подпись настроек скачивания: сменилась — докачка сбрасывается."""
+        return f"{self.quality_var.get()}|ru={int(self.ru_audio_var.get())}"
+
+    def clean_temp_for_startup(self):
+        """Чистка temp при старте: мусор, сироты, смена настроек, лимит размера."""
+        try:
+            with self.cond:
+                queue_ids = set(self.active_ids) | {
+                    v for v, _u in self.pending
+                } | set(self.deferred_live)
+            removed = prepare_temp_folder(queue_ids, self.temp_signature())
+            if removed:
+                self.log(f"Очищено в {TEMP_FOLDER}: {removed} файл(ов)")
+        except Exception as e:
+            print("clean_temp_for_startup error:", e)
 
     def load_downloaded(self):
         self.downloaded_ids = set()
@@ -927,6 +1040,10 @@ class YouTubeDownloaderApp:
             # Качаем во временную папку на C:, имя с video_id — чтобы докачка
             # находила свой .part даже если название перевелось иначе
             outtmpl = os.path.join(TEMP_FOLDER, f"{vid}.%(ext)s")
+            # Запоминаем настройки: если их поменяют, докачка сбросится
+            state = load_temp_state()
+            state[vid] = self.temp_signature()
+            save_temp_state(state)
             ok, path, err = self.download_one(url, outtmpl)
             if ok:
                 try:
@@ -1087,6 +1204,9 @@ class YouTubeDownloaderApp:
                         pass
         except Exception:
             pass
+        state = load_temp_state()
+        if state.pop(vid, None) is not None:
+            save_temp_state(state)
 
     def build_opts(self, client, fmt, outtmpl, skip=False):
         opts = {
