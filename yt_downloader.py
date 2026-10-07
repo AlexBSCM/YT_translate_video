@@ -1324,16 +1324,64 @@ class YouTubeDownloaderApp:
     # ---------- clipboard monitor ----------
 
     def poll_clipboard(self):
-        if self.monitor_var.get():
-            try:
-                text = self.root.clipboard_get()
-            except tk.TclError:
-                text = ""
-            if text and text != self._last_clip:
-                self._last_clip = text
-                for vid in extract_all_video_ids(text):
-                    self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="clipboard")
+        # Сначала планируем следующий опрос: любое исключение ниже не должно
+        # навсегда останавливать монитор буфера обмена
         self.root.after(CLIPBOARD_POLL_MS, self.poll_clipboard)
+        if not self.monitor_var.get():
+            return
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            return
+        try:
+            if not text or text == self._last_clip:
+                return
+            self._last_clip = text
+            self.handle_clipboard_links(extract_all_video_ids(text))
+        except Exception as e:
+            self.log(f"Ошибка монитора буфера: {e}")
+
+    def handle_clipboard_links(self, vids):
+        """Новые видео добавляем сразу, по уже скачанным задаём один вопрос."""
+        if not vids:
+            return
+        with self.cond:
+            fresh = [v for v in vids if v not in self.downloaded_ids]
+            existing = [v for v in vids if v in self.downloaded_ids]
+        for vid in fresh:
+            self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="clipboard")
+        if not existing:
+            return
+        if len(existing) == 1:
+            msg = f"Видео «{self.downloaded_title(existing[0])}» уже скачано. Скачать заново?"
+        else:
+            msg = (
+                f"{len(existing)} видео из буфера уже скачаны:\n"
+                + "\n".join(f"• {self.downloaded_title(v)}" for v in existing[:10])
+                + (f"\n… и ещё {len(existing) - 10}" if len(existing) > 10 else "")
+                + "\n\nСкачать их заново?"
+            )
+        try:
+            answer = bool(messagebox.askyesno("Уже скачано", msg))
+        except Exception:
+            answer = False
+        if not answer:
+            self.log(f"Из буфера пропущено уже скачанных: {len(existing)}")
+            return
+        for vid in existing:
+            self.enqueue(
+                vid,
+                f"https://www.youtube.com/watch?v={vid}",
+                source="буфер (повтор)",
+                force=True,
+            )
+
+    def downloaded_title(self, vid):
+        with self.cond:
+            for rec in self.downloaded_records:
+                if rec.get("video_id") == vid:
+                    return rec.get("final_title") or rec.get("original_title") or vid
+        return vid
 
     # ---------- VPN ----------
 
