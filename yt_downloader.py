@@ -6,6 +6,7 @@ import datetime
 import subprocess
 import threading
 import time
+import queue as ui_queue
 import tkinter as tk
 from collections import deque
 from tkinter import ttk, messagebox, filedialog
@@ -459,6 +460,10 @@ class YouTubeDownloaderApp:
         self._last_clip = ""
         self._last_pct = -1
         self._settings_job = None
+        # Какие видео уже показаны в немодальном окне «Уже скачано»
+        self._redownload_prompts = set()
+        # Задачи для GUI-потока: Tk нельзя трогать из рабочих потоков
+        self._ui_queue = ui_queue.Queue()
 
         # Сохранённые настройки применяются к дефолтам всех полей
         self.settings = load_settings()
@@ -725,6 +730,7 @@ class YouTubeDownloaderApp:
 
         self.root.after(300, self.refresh_vpn_status)
         self.root.after(CLIPBOARD_POLL_MS, self.poll_clipboard)
+        self.root.after(30, self._drain_ui_queue)
         self.refresh_queue_display()
 
     # ---------- persistence ----------
@@ -1049,7 +1055,7 @@ class YouTubeDownloaderApp:
             self.cond.notify()
         self.persist_queue()
         self.log(f"В очередь [{source}]: {vid}")
-        self.root.after(0, self.refresh_queue_display)
+        self.ui_call(self.refresh_queue_display)
         return True
 
     def worker_loop(self):
@@ -1076,7 +1082,7 @@ class YouTubeDownloaderApp:
                     from_deferred = True
                 self.current = (vid, url)
             self.persist_queue()
-            self.root.after(0, self.refresh_queue_display)
+            self.ui_call(self.refresh_queue_display)
             try:
                 self.process(vid, url, from_deferred=from_deferred)
             finally:
@@ -1085,7 +1091,7 @@ class YouTubeDownloaderApp:
                     if vid not in self.deferred_live:
                         self.active_ids.discard(vid)
                 self.persist_queue()
-                self.root.after(0, self.refresh_queue_display)
+                self.ui_call(self.refresh_queue_display)
 
     def process(self, vid, url, from_deferred=False):
         self.set_status(f"Обработка {vid}...")
@@ -1382,25 +1388,33 @@ class YouTubeDownloaderApp:
                 percent = downloaded / total * 100
                 if int(percent) != self._last_pct:
                     self._last_pct = int(percent)
-                    self.root.after(0, self.update_progress, percent)
+                    self.ui_call(self.update_progress, percent)
         elif d["status"] == "finished":
-            self.root.after(0, self.set_status, "Загрузка завершена, финализация...")
+            self.ui_call(self.set_status, "Загрузка завершена, финализация...")
 
     def update_progress(self, percent):
+        if threading.current_thread() is not threading.main_thread():
+            self.ui_call(self.update_progress, percent)
+            return
         self.progress["value"] = percent
         self.status_var.set(f"Скачивание... {percent:.0f}%")
 
     def set_status(self, text):
+        if threading.current_thread() is not threading.main_thread():
+            self.ui_call(self.set_status, text)
+            return
         self.status_var.set(text)
 
     def log(self, msg):
-        def _do():
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
-            self.log_text.configure(state="normal")
-            self.log_text.insert(tk.END, f"[{ts}] {msg}\n")
-            self.log_text.see(tk.END)
-            self.log_text.configure(state="disabled")
-        self.root.after(0, _do)
+        if threading.current_thread() is not threading.main_thread():
+            self.ui_call(self.log, msg)
+            return
+
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self.log_text.configure(state="normal")
+        self.log_text.insert(tk.END, f"[{ts}] {msg}\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state="disabled")
 
     def refresh_queue_display(self):
         with self.cond:
@@ -1464,7 +1478,7 @@ class YouTubeDownloaderApp:
             self.log(f"Ошибка монитора буфера: {e}")
 
     def handle_clipboard_links(self, vids):
-        """Новые видео добавляем сразу, по уже скачанным задаём один вопрос."""
+        """Новые видео добавляем сразу, по уже скачанным показываем немодальное окно."""
         if not vids:
             return
         with self.cond:
@@ -1474,29 +1488,85 @@ class YouTubeDownloaderApp:
             self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="clipboard")
         if not existing:
             return
-        if len(existing) == 1:
-            msg = f"Видео «{self.downloaded_title(existing[0])}» уже скачано. Скачать заново?"
-        else:
-            msg = (
-                f"{len(existing)} видео из буфера уже скачаны:\n"
-                + "\n".join(f"• {self.downloaded_title(v)}" for v in existing[:10])
-                + (f"\n… и ещё {len(existing) - 10}" if len(existing) > 10 else "")
-                + "\n\nСкачать их заново?"
-            )
-        try:
-            answer = bool(messagebox.askyesno("Уже скачано", msg))
-        except Exception:
-            answer = False
-        if not answer:
-            self.log(f"Из буфера пропущено уже скачанных: {len(existing)}")
+        # Вопрос не должен останавливать ни интерфейс, ни загрузку очереди
+        self.prompt_redownload_async(existing)
+
+    def prompt_redownload_async(self, vids):
+        """Немодальное окно: скачать уже сохранённые видео заново или пропустить.
+
+        Очередь и монитор буфера при этом продолжают работать.
+        """
+        pending = [v for v in vids if v not in self._redownload_prompts]
+        if not pending:
             return
-        for vid in existing:
-            self.enqueue(
-                vid,
-                f"https://www.youtube.com/watch?v={vid}",
-                source="буфер (повтор)",
-                force=True,
-            )
+        self._redownload_prompts.update(pending)
+
+        win = tk.Toplevel(self.root)
+        win.title("Уже скачано")
+        win.resizable(False, False)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+        try:
+            win.attributes("-topmost", True)
+            win.after(1500, lambda: win.attributes("-topmost", False))
+        except Exception:
+            pass
+        # Намеренно без grab_set(): окно не блокирует приложение
+
+        ttk.Label(
+            win,
+            text="Эти видео уже скачаны. Скачать их заново вместе с очередью?",
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(14, 6))
+
+        list_frame = ttk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=14)
+        titles = "\n".join(
+            f"• {self.downloaded_title(v)}" for v in pending[:12]
+        )
+        if len(pending) > 12:
+            titles += f"\n… и ещё {len(pending) - 12}"
+        ttk.Label(
+            list_frame, text=titles, wraplength=430, justify="left"
+        ).pack(anchor="w")
+
+        hint = ttk.Label(
+            win,
+            text="Можно не отвечать — загрузка остальных видео не останавливается.",
+            foreground="gray",
+            wraplength=430,
+            justify="left",
+        )
+        hint.pack(anchor="w", padx=14, pady=(8, 0))
+
+        buttons = ttk.Frame(win)
+        buttons.pack(fill="x", padx=14, pady=(12, 14))
+
+        def close(*_args):
+            self._redownload_prompts.difference_update(pending)
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        def do_redownload():
+            for vid in pending:
+                self.enqueue(
+                    vid,
+                    f"https://www.youtube.com/watch?v={vid}",
+                    source="буфер (повтор)",
+                    force=True,
+                )
+            close()
+
+        ttk.Button(buttons, text="Скачать заново", command=do_redownload).pack(
+            side="right", padx=(6, 0)
+        )
+        ttk.Button(buttons, text="Пропустить", command=close).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", close)
 
     def downloaded_title(self, vid):
         with self.cond:
@@ -1525,7 +1595,7 @@ class YouTubeDownloaderApp:
                 )
             except Exception:
                 pass
-            self.root.after(0, self.refresh_vpn_status)
+            self.ui_call(self.refresh_vpn_status)
 
         self.status_var.set("Переподключение VPN... (5 секунд)")
         threading.Thread(target=worker, daemon=True).start()
@@ -1534,7 +1604,7 @@ class YouTubeDownloaderApp:
         def check():
             up = vpn_is_up()
             proc = vpn_process_running()
-            self.root.after(0, self._set_vpn_status, up, proc)
+            self.ui_call(self._set_vpn_status, up, proc)
 
         threading.Thread(target=check, daemon=True).start()
 
@@ -1552,6 +1622,32 @@ class YouTubeDownloaderApp:
         self.vpn_label.config(foreground=fg)
 
     # ---------- misc UI helpers ----------
+
+    def ui_call(self, fn, *args):
+        """Выполнить действие в GUI-потоке. Безопасно из любого потока."""
+        try:
+            self._ui_queue.put_nowait((fn, args))
+        except Exception:
+            pass
+
+    def _drain_ui_queue(self):
+        """Забирает задачи из рабочих потоков и выполняет их в GUI-потоке."""
+        try:
+            while True:
+                try:
+                    fn, args = self._ui_queue.get_nowait()
+                except ui_queue.Empty:
+                    break
+                try:
+                    fn(*args)
+                except Exception as e:
+                    print("ui task error:", e)
+        except Exception as e:
+            print("drain ui queue error:", e)
+        try:
+            self.root.after(50, self._drain_ui_queue)
+        except Exception:
+            pass
 
     def setup_context_menu(self, widget):
         menu = tk.Menu(self.root, tearoff=0)
