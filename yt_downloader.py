@@ -462,6 +462,8 @@ class YouTubeDownloaderApp:
 
         # Сохранённые настройки применяются к дефолтам всех полей
         self.settings = load_settings()
+        # Папка нужна и на главной вкладке (подпись), и в настройках
+        self.folder_var = tk.StringVar(value=self.default_folder())
 
         # Папка temp создаётся сразу; чистка — после восстановления очереди,
         # когда известны настройки качества и список видео в очереди
@@ -520,6 +522,24 @@ class YouTubeDownloaderApp:
             main_tab, text="Скачать заново...", command=self.open_redownload_dialog
         )
         self.redownload_button.pack(fill="x", pady=(0, 8))
+
+        # Куда сохраняются видео — видно сразу, можно поменять здесь же
+        folder_bar = ttk.Frame(main_tab)
+        folder_bar.pack(fill="x", pady=(0, 8))
+        ttk.Label(folder_bar, text="Папка:").pack(side="left")
+        self.folder_display_var = tk.StringVar()
+        self.folder_display_label = ttk.Label(
+            folder_bar, textvariable=self.folder_display_var, foreground="#1a5fb4"
+        )
+        self.folder_display_label.pack(side="left", padx=(4, 6))
+        self.folder_change_button = ttk.Button(
+            folder_bar, text="Изменить", command=self.choose_folder
+        )
+        self.folder_change_button.pack(side="right")
+        self.update_folder_display()
+        self.folder_var.trace_add(
+            "write", lambda *a: self.update_folder_display()
+        )
 
         queue_frame = ttk.LabelFrame(main_tab, text="Очередь загрузок", padding=6)
         queue_frame.pack(fill="both", expand=True, pady=(0, 6))
@@ -680,7 +700,6 @@ class YouTubeDownloaderApp:
         self.folder_label = ttk.Label(settings_tab, text="Папка для сохранения:")
         self.folder_label.pack(anchor="w")
 
-        self.folder_var = tk.StringVar(value=self.default_folder())
         self.folder_entry = ttk.Entry(settings_tab, textvariable=self.folder_var)
         self.folder_entry.pack(fill="x", pady=(4, 4))
 
@@ -1556,9 +1575,36 @@ class YouTubeDownloaderApp:
         return "break"
 
     def choose_folder(self):
-        folder = filedialog.askdirectory(initialdir=self.folder_var.get())
+        try:
+            current = self.folder_var.get()
+            if current and not os.path.isdir(current):
+                current = os.path.dirname(current) or desktop_path()
+        except Exception:
+            current = desktop_path()
+        folder = filedialog.askdirectory(initialdir=current)
         if folder:
             self.folder_var.set(folder)
+
+    def update_folder_display(self):
+        """Короткая подпись папки на главном экране (конец пути важнее начала)."""
+        try:
+            path = (self.folder_var.get() or "").strip()
+        except Exception:
+            return
+        if not path:
+            self.folder_display_var.set("(не выбрана)")
+            return
+        display = path
+        if len(display) > 48:
+            display = "…" + display[-47:]
+        self.folder_display_var.set(display)
+        try:
+            if os.path.isdir(path):
+                self.folder_display_label.config(foreground="#1a5fb4")
+            else:
+                self.folder_display_label.config(foreground="#c62828")
+        except Exception:
+            pass
 
     def choose_cookies_file(self):
         file = filedialog.askopenfilename(
