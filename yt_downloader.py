@@ -308,28 +308,29 @@ def desktop_path():
     return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
-def vpn_is_up():
+def vpn_status():
+    """Статус VPN одной командой PowerShell: (туннель поднят, процесс запущен).
+
+    Раньше было два отдельных вызова PowerShell — это занимало в 2 раза времени.
+    """
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-Command",
-             "Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'WireGuard|Tunnel' } | Select-Object -ExpandProperty Status"],
-            capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+             "Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'WireGuard|Tunnel' } "
+             "| Select-Object -ExpandProperty Status; "
+             "'---SEP---'; "
+             "Get-Process | Where-Object { $_.Name -match 'PORTAL|wireguard|amnezia|awg' } "
+             "| Select-Object -ExpandProperty ProcessName"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        return "Up" in (out.stdout or "")
+        text = (out.stdout or "")
+        parts = text.split("---SEP---")
+        up = "Up" in parts[0]
+        proc_running = len(parts) > 1 and bool(parts[1].strip())
+        return up, proc_running
     except Exception:
-        return False
-
-
-def vpn_process_running():
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-Process | Where-Object { $_.Name -match 'PORTAL|wireguard|amnezia|awg' } | Select-Object -ExpandProperty ProcessName"],
-            capture_output=True, text=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        return bool((out.stdout or "").strip())
-    except Exception:
-        return False
+        return False, False
 
 
 def extract_video_id(text):
@@ -1326,7 +1327,9 @@ class YouTubeDownloaderApp:
                     # следующий вариант: для некоторых видео web_embedded
                     # отдаёт только storyboard, а android всё ещё доступен.
                     if self._is_retryable(detail):
-                        time.sleep(2)
+                        # Пауза растёт с каждым кругом попыток (2с, 4с) —
+                        # меньше лишнего шума, когда сеть лежит надолго
+                        time.sleep(2 * (_round + 1))
         return False, None, last_error
 
     @staticmethod
@@ -1622,9 +1625,7 @@ class YouTubeDownloaderApp:
 
     def refresh_vpn_status(self):
         def check():
-            up = vpn_is_up()
-            proc = vpn_process_running()
-            self.ui_call(self._set_vpn_status, up, proc)
+            self.ui_call(self._set_vpn_status, *vpn_status())
 
         threading.Thread(target=check, daemon=True).start()
 
