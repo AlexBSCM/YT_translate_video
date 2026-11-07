@@ -233,6 +233,9 @@ def load_queue_file(path=QUEUE_FILE):
                 checks = int(entry.get("checks") or 0)
             except (TypeError, ValueError):
                 checks = 0
+            quality = (entry.get("quality") or "").strip()
+            if quality not in QUALITY_OPTIONS:
+                quality = None
             items.append({
                 "video_id": vid,
                 "url": url,
@@ -242,6 +245,7 @@ def load_queue_file(path=QUEUE_FILE):
                 "deferred": bool(entry.get("deferred")),
                 "checks": max(0, checks),
                 "paused": bool(entry.get("paused")),
+                "quality": quality,
             })
         return items
     except Exception as e:
@@ -790,9 +794,12 @@ class YouTubeDownloaderApp:
         except Exception as e:
             print("save_settings_now error:", e)
 
+    def temp_signature_for(self, quality):
+        """Подпись настроек скачать конкретного видео: сменились — докачка сбрасывается."""
+        return f"{quality}|ru={int(self.ru_audio_var.get())}"
+
     def temp_signature(self):
-        """Подпись настроек скачивания: сменилась — докачка сбрасывается."""
-        return f"{self.quality_var.get()}|ru={int(self.ru_audio_var.get())}"
+        return self.temp_signature_for(self.quality_var.get())
 
     def clean_temp_for_startup(self):
         """Чистка temp при старте: мусор, сироты, смена настроек, лимит размера."""
@@ -863,6 +870,7 @@ class YouTubeDownloaderApp:
                     "date_str": meta.get("date_str") or _today_folder_name(),
                     "added_at": meta.get("added_at"),
                     "attempts": meta.get("attempts", 0),
+                    "quality": meta.get("quality"),
                 })
             for vid, info in self.failed_info.items():
                 if vid in seen or vid in self.downloaded_ids:
@@ -875,6 +883,7 @@ class YouTubeDownloaderApp:
                     "date_str": meta.get("date_str") or _today_folder_name(),
                     "added_at": meta.get("added_at"),
                     "attempts": meta.get("attempts", 0),
+                    "quality": meta.get("quality") or info.get("quality"),
                 })
             for vid, info in self.deferred_live.items():
                 if vid in seen or vid in self.downloaded_ids:
@@ -890,6 +899,7 @@ class YouTubeDownloaderApp:
                     "deferred": True,
                     "checks": info.get("checks", 0),
                     "paused": bool(info.get("paused")),
+                    "quality": meta.get("quality"),
                 })
         with self._persist_lock:
             save_queue_file(items)
@@ -921,6 +931,7 @@ class YouTubeDownloaderApp:
                         "date_str": entry.get("date_str") or _today_folder_name(),
                         "added_at": entry.get("added_at"),
                         "attempts": entry.get("attempts", 0),
+                        "quality": entry.get("quality"),
                     }
                     deferred_added += 1
                     continue
@@ -930,6 +941,7 @@ class YouTubeDownloaderApp:
                     "date_str": entry.get("date_str") or _today_folder_name(),
                     "added_at": entry.get("added_at"),
                     "attempts": entry.get("attempts", 0),
+                    "quality": entry.get("quality"),
                 }
                 self.failed_ids.discard(vid)
                 self.failed_info.pop(vid, None)
@@ -1019,14 +1031,15 @@ class YouTubeDownloaderApp:
             if not vids:
                 messagebox.showwarning("Внимание", "Ссылка не распознана как YouTube", parent=win)
                 return
-            # Добавляем в очередь с выбранным качеством
-            orig_quality = self.quality_var.get()
-            self.quality_var.set(quality_var.get())
+            # Качество каждого видео фиксируется per-item; глобальные настройки
+            # не трогаем, иначе сломается текущая загрузка и докачка temp
             added = 0
             for vid in vids:
-                if self.enqueue(vid, f"https://www.youtube.com/watch?v={vid}", source="повторное", force=True):
+                if self.enqueue(
+                    vid, f"https://www.youtube.com/watch?v={vid}",
+                    source="повторное", force=True, quality=quality_var.get(),
+                ):
                     added += 1
-            self.quality_var.set(orig_quality)
             if added:
                 self.log(f"Скачать заново: добавлено {added} видео с качеством {quality_var.get()}")
             win.destroy()
@@ -1036,7 +1049,7 @@ class YouTubeDownloaderApp:
 
         url_entry.focus_set()
 
-    def enqueue(self, vid, url, source="clipboard", force=False):
+    def enqueue(self, vid, url, source="clipboard", force=False, quality=None):
         with self.cond:
             if not force and vid in self.downloaded_ids:
                 self.log(f"Пропуск (уже скачано): {vid}")
@@ -1047,10 +1060,13 @@ class YouTubeDownloaderApp:
                 return False
             self.active_ids.add(vid)
             self.pending.append((vid, url))
+            # Качество фиксируется за каждым видео (per-item): подмена
+            # глобальных настроек влетеле ломала идущую загрузку
             self.queue_meta[vid] = {
                 "date_str": _today_folder_name(),
                 "added_at": datetime.datetime.now().isoformat(timespec="seconds"),
                 "attempts": 0,
+                "quality": quality or self.quality_var.get(),
             }
             self.cond.notify()
         self.persist_queue()
@@ -1098,6 +1114,8 @@ class YouTubeDownloaderApp:
         with self.cond:
             meta = self.queue_meta.get(vid, {})
             date_str = meta.get("date_str") or _today_folder_name()
+            # Качество конкретного видео, сохранённое при добавлении в очередь
+            quality = meta.get("quality")
         base_folder = self.folder_var.get()
         date_folder = os.path.join(base_folder, date_str)
         try:
@@ -1170,9 +1188,9 @@ class YouTubeDownloaderApp:
             outtmpl = os.path.join(TEMP_FOLDER, f"{vid}.%(ext)s")
             # Запоминаем настройки: если их поменяют, докачка сбросится
             state = load_temp_state()
-            state[vid] = self.temp_signature()
+            state[vid] = self.temp_signature_for(quality)
             save_temp_state(state)
-            ok, path, err = self.download_one(url, outtmpl)
+            ok, path, err = self.download_one(url, outtmpl, quality)
             if ok:
                 try:
                     path = move_to_target(path, date_folder, fname)
@@ -1261,8 +1279,10 @@ class YouTubeDownloaderApp:
                 continue
         return "", False, None
 
-    def download_one(self, url, outtmpl):
-        quality = QUALITY_OPTIONS[self.quality_var.get()]
+    def download_one(self, url, outtmpl, quality=None):
+        if quality not in QUALITY_OPTIONS:
+            quality = self.quality_var.get()
+        quality = QUALITY_OPTIONS[quality]
         ru_audio = "[language=ru]" if self.ru_audio_var.get() else ""
         if quality == "best":
             fmt = f"bestvideo+bestaudio{ru_audio}/bestvideo+bestaudio/best"
