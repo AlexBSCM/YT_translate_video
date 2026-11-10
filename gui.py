@@ -46,7 +46,7 @@ LIVE_MAX_CHECKS = LIVE_SESSION_LIMIT_SEC // LIVE_RECHECK_SEC
 class YouTubeDownloaderApp:
     def __init__(self, root):
         self.root = root
-        root.title("YouTube Downloader")
+        root.title(f"YouTube Downloader {config.VERSION}")
         root.geometry("700x680")
         root.resizable(True, True)
 

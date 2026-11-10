@@ -37,6 +37,10 @@ QUALITY_OPTIONS = {
 }
 DEFAULT_QUALITY = "1080p (по умолчанию)"
 
+# Версия кода показывается в заголовке окна: так всегда видно, какая
+# сборка запущена (важно, когда приложение стоит на нескольких машинах)
+VERSION = "2.0 (improvements)"
+
 # Переопределение temp-папки ключом "temp_folder" в settings.json
 _temp_override = None
 
